@@ -33,6 +33,8 @@ import tempfile
 import random
 import logging
 import traceback
+import enum
+import re
 
 from threading import Thread
 
@@ -103,6 +105,45 @@ def encode(obj):
 def decode(obj):
     """Deserialize objects retrieved from SQLite."""
     return loads(bytes(obj))
+
+
+class ColumnType(enum.Enum):
+    INTEGER
+    TEXT
+    BLOB
+    REAL
+    NUMERIC
+
+    @classmethod
+    def convert(type, *, default):
+        if not type:
+            type = default
+
+        if type == INTEGER:
+            return 'INTEGER'
+        elif type == TEXT:
+            return 'TEXT'
+        elif type == BLOB:
+            return 'BLOB'
+        elif type == REAL:
+            return 'REAL'
+        else:
+            return 'BLOB'
+
+
+def _validate_identifier(*,
+        identifier,
+        what_thing,
+        validation_re = None):
+    if not identifier:
+        raise RuntimeError(f'{what_thing} must have a value (not None or empty string)')
+    else:
+        if not validation_re:
+            validation_re = r'^[a-zA-Z_][a-z-A-Z0-9_]+$'
+        match = re.match(validation_re, identifier, re.A)
+        if not match:
+            raise RuntimeError(f'{what_thing} must match validation_re: [{validation_re}')
+        return identifier
 
 
 class SqliteDict(DictClass):
