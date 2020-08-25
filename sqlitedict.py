@@ -132,6 +132,8 @@ class ColumnType(enum.Enum):
 
 
 _reasonable_validation_re = r'^[a-zA-Z_][a-z-A-Z0-9_]*$'
+
+
 def _validate_identifier(*,
         identifier,
         what_thing,
@@ -232,7 +234,6 @@ class SqliteDict(DictClass):
                 what_thing = 'value_column',
                 validation_re = identifier_validation_re)
         self.value_type = ColumnType.convert(value_type, default = ColumnType.BLOB)
-
 
         if attempt_create:
             logger.info("opening Sqlite table %r in %r" % (tablename, filename))
