@@ -131,6 +131,7 @@ class ColumnType(enum.Enum):
             return 'BLOB'
 
 
+_reasonable_validation_re = r'^[a-zA-Z_][a-z-A-Z0-9_]*$'
 def _validate_identifier(*,
         identifier,
         what_thing,
@@ -138,19 +139,24 @@ def _validate_identifier(*,
     if not identifier:
         raise RuntimeError(f'{what_thing} must have a value (not None or empty string)')
     else:
-        if not validation_re:
-            validation_re = r'^[a-zA-Z_][a-z-A-Z0-9_]+$'
-        match = re.match(validation_re, identifier, re.A)
-        if not match:
-            raise RuntimeError(f'{what_thing} must match validation_re: [{validation_re}')
-        return identifier
+        if validation_re:
+            match = re.match(validation_re, identifier, re.A)
+            if not match:
+                raise RuntimeError(f'{what_thing} must match validation_re: [{validation_re}')
+
+        # Use standard SQL escaping of double quote characters in identifiers, by doubling them.
+        # See https://github.com/RaRe-Technologies/sqlitedict/pull/113
+        return identifier.replace('"', '""')
 
 
 class SqliteDict(DictClass):
     VALID_FLAGS = ['c', 'r', 'w', 'n']
 
     def __init__(self, filename=None, tablename='unnamed', flag='c',
-                 autocommit=False, journal_mode="DELETE", encode=encode, decode=decode):
+                 autocommit=False, journal_mode="DELETE", encode=encode, decode=decode,
+                 *, key_column = None, key_type = None,
+                 value_column = None, value_column = None,
+                 identifier_validation_re = None, attempt_create = True):
         """
         Initialize a thread-safe sqlite-backed dictionary. The dictionary will
         be a table `tablename` in database file `filename`. A single file (=database)
@@ -202,22 +208,45 @@ class SqliteDict(DictClass):
 
         self.filename = filename
 
-        # Use standard SQL escaping of double quote characters in identifiers, by doubling them.
-        # See https://github.com/RaRe-Technologies/sqlitedict/pull/113
-        self.tablename = tablename.replace('"', '""')
+        self.tablename = _validate_identifier(
+                identifier = tablename,
+                what_thing = 'tablename',
+                validation_re = identifier_validation_re)
 
         self.autocommit = autocommit
         self.journal_mode = journal_mode
         self.encode = encode
         self.decode = decode
 
-        logger.info("opening Sqlite table %r in %r" % (tablename, filename))
-        MAKE_TABLE = 'CREATE TABLE IF NOT EXISTS "%s" (key TEXT PRIMARY KEY, value BLOB)' % self.tablename
-        self.conn = self._new_conn()
-        self.conn.execute(MAKE_TABLE)
-        self.conn.commit()
-        if flag == 'w':
-            self.clear()
+        if not key_column:
+            key_column = 'key'
+        self.key_column = _validate_identifier(
+                identifier - key_column,
+                what_thing = 'key_column',
+                validation_re = identifier_validation_re)
+        self.key_type = ColumnType.convert(key_type, default = ColumnType.TEXT)
+        if not value_column:
+            value_column = 'value'
+        self.value_column = _validate_identifier(
+                identifier - value_column,
+                what_thing = 'value_column',
+                validation_re = identifier_validation_re)
+        self.value_type = ColumnType.convert(value_type, default = ColumnType.BLOB)
+
+
+        if attempt_create:
+            logger.info("opening Sqlite table %r in %r" % (tablename, filename))
+            MAKE_TABLE = 'CREATE TABLE IF NOT EXISTS "%s" ("%s" %s PRIMARY KEY, "%s" BLOB)' % (
+                    self.tablename,
+                    self.key_column,
+                    self.key_type,
+                    self.value_column,
+                    self.value_type)
+            self.conn = self._new_conn()
+            self.conn.execute(MAKE_TABLE)
+            self.conn.commit()
+            if flag == 'w':
+                self.clear()
 
     def _new_conn(self):
         return SqliteMultithread(self.filename, autocommit=self.autocommit, journal_mode=self.journal_mode)
@@ -254,17 +283,24 @@ class SqliteDict(DictClass):
         return True if m is not None else False
 
     def iterkeys(self):
-        GET_KEYS = 'SELECT key FROM "%s" ORDER BY rowid' % self.tablename
+        GET_KEYS = 'SELECT "%s" FROM "%s" ORDER BY rowid' % (
+                self.key_column,
+                self.tablename)
         for key in self.conn.select(GET_KEYS):
             yield key[0]
 
     def itervalues(self):
-        GET_VALUES = 'SELECT value FROM "%s" ORDER BY rowid' % self.tablename
+        GET_VALUES = 'SELECT "%s" FROM "%s" ORDER BY rowid' % (
+                self.value_column,
+                self.tablename)
         for value in self.conn.select(GET_VALUES):
             yield self.decode(value[0])
 
     def iteritems(self):
-        GET_ITEMS = 'SELECT key, value FROM "%s" ORDER BY rowid' % self.tablename
+        GET_ITEMS = 'SELECT "%s", "%s" FROM "%s" ORDER BY rowid' % (
+                self.key_column,
+                self.value_column,
+                self.tablename)
         for key, value in self.conn.select(GET_ITEMS):
             yield key, self.decode(value)
 
@@ -278,11 +314,16 @@ class SqliteDict(DictClass):
         return self.iteritems() if major_version > 2 else list(self.iteritems())
 
     def __contains__(self, key):
-        HAS_ITEM = 'SELECT 1 FROM "%s" WHERE key = ?' % self.tablename
+        HAS_ITEM = 'SELECT 1 FROM "%s" WHERE "%s" = ?' % (
+                self.tablename,
+                self.key_column)
         return self.conn.select_one(HAS_ITEM, (key,)) is not None
 
     def __getitem__(self, key):
-        GET_ITEM = 'SELECT value FROM "%s" WHERE key = ?' % self.tablename
+        GET_ITEM = 'SELECT "%s" FROM "%s" WHERE "%s" = ?' % (
+                self.value_column,
+                self.tablename,
+                self.key_column)
         item = self.conn.select_one(GET_ITEM, (key,))
         if item is None:
             raise KeyError(key)
@@ -292,7 +333,10 @@ class SqliteDict(DictClass):
         if self.flag == 'r':
             raise RuntimeError('Refusing to write to read-only SqliteDict')
 
-        ADD_ITEM = 'REPLACE INTO "%s" (key, value) VALUES (?,?)' % self.tablename
+        ADD_ITEM = 'REPLACE INTO "%s" ("%s", "%s") VALUES (?,?)' % (
+                self.tablename,
+                self.key_column,
+                self.value_column)
         self.conn.execute(ADD_ITEM, (key, self.encode(value)))
         if self.autocommit:
             self.commit()
@@ -303,7 +347,9 @@ class SqliteDict(DictClass):
 
         if key not in self:
             raise KeyError(key)
-        DEL_ITEM = 'DELETE FROM "%s" WHERE key = ?' % self.tablename
+        DEL_ITEM = 'DELETE FROM "%s" WHERE "%s" = ?' % (
+                self.tablename,
+                self.key_column)
         self.conn.execute(DEL_ITEM, (key,))
         if self.autocommit:
             self.commit()
@@ -318,7 +364,10 @@ class SqliteDict(DictClass):
             pass
         items = [(k, self.encode(v)) for k, v in items]
 
-        UPDATE_ITEMS = 'REPLACE INTO "%s" (key, value) VALUES (?, ?)' % self.tablename
+        UPDATE_ITEMS = 'REPLACE INTO "%s" ("%s", "%s") VALUES (?, ?)' % (
+                self.tablename,
+                self.key_column,
+                self.value_column)
         self.conn.executemany(UPDATE_ITEMS, items)
         if kwds:
             self.update(kwds)
