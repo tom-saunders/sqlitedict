@@ -108,24 +108,24 @@ def decode(obj):
 
 
 class ColumnType(enum.Enum):
-    INTEGER
-    TEXT
-    BLOB
-    REAL
-    NUMERIC
+    INTEGER = enum.auto()
+    TEXT = enum.auto()
+    BLOB = enum.auto()
+    REAL = enum.auto()
+    NUMERIC = enum.auto()
 
     @classmethod
-    def convert(type, *, default):
+    def convert(cls, type, *, default):
         if not type:
             type = default
 
-        if type == INTEGER:
+        if type == cls.INTEGER:
             return 'INTEGER'
-        elif type == TEXT:
+        elif type == cls.TEXT:
             return 'TEXT'
-        elif type == BLOB:
+        elif type == cls.BLOB:
             return 'BLOB'
-        elif type == REAL:
+        elif type == cls.REAL:
             return 'REAL'
         else:
             return 'BLOB'
@@ -155,7 +155,7 @@ class SqliteDict(DictClass):
     def __init__(self, filename=None, tablename='unnamed', flag='c',
                  autocommit=False, journal_mode="DELETE", encode=encode, decode=decode,
                  *, key_column = None, key_type = None,
-                 value_column = None, value_column = None,
+                 value_column = None, value_type = None,
                  identifier_validation_re = None, attempt_create = True):
         """
         Initialize a thread-safe sqlite-backed dictionary. The dictionary will
@@ -221,14 +221,14 @@ class SqliteDict(DictClass):
         if not key_column:
             key_column = 'key'
         self.key_column = _validate_identifier(
-                identifier - key_column,
+                identifier = key_column,
                 what_thing = 'key_column',
                 validation_re = identifier_validation_re)
         self.key_type = ColumnType.convert(key_type, default = ColumnType.TEXT)
         if not value_column:
             value_column = 'value'
         self.value_column = _validate_identifier(
-                identifier - value_column,
+                identifier = value_column,
                 what_thing = 'value_column',
                 validation_re = identifier_validation_re)
         self.value_type = ColumnType.convert(value_type, default = ColumnType.BLOB)
@@ -236,7 +236,7 @@ class SqliteDict(DictClass):
 
         if attempt_create:
             logger.info("opening Sqlite table %r in %r" % (tablename, filename))
-            MAKE_TABLE = 'CREATE TABLE IF NOT EXISTS "%s" ("%s" %s PRIMARY KEY, "%s" BLOB)' % (
+            MAKE_TABLE = 'CREATE TABLE IF NOT EXISTS "%s" ("%s" %s PRIMARY KEY, "%s" %s)' % (
                     self.tablename,
                     self.key_column,
                     self.key_type,
